@@ -221,7 +221,97 @@ run_feature() {
 		return 1
 	fi
 
-	(cd "$target" && python3 attendance_checker.py)
+	# The application is interactive; without a terminal, input() hits EOF.
+	if [ ! -t 0 ]; then
+		echo "Error: the attendance checker is interactive and needs a terminal (stdin is not a TTY)." >&2
+		return 1
+	fi
+
+	if ! validate_project "$target"; then
+		echo "Not running the application: fix the problem above and try again." >&2
+		return 1
+	fi
+
+	local status=0
+	(cd "$target" && python3 attendance_checker.py) || status=$?
+	if [ "$status" -eq 130 ]; then
+		echo "Session interrupted. Roster was not changed."
+	elif [ "$status" -ne 0 ]; then
+		echo "Error: the attendance checker exited with status $status." >&2
+		return "$status"
+	fi
+}
+
+# Validates Helpers/config.json and Helpers/assets.csv so the application
+# never starts with input it cannot handle.
+validate_project() {
+	local target="$1"
+	python3 -I - "$target" <<'PY'
+import csv, json, os, sys
+
+target = sys.argv[1]
+cfg_path = os.path.join(target, "Helpers", "config.json")
+csv_path = os.path.join(target, "Helpers", "assets.csv")
+errors = []
+
+def num(v):
+    return isinstance(v, (int, float)) and not isinstance(v, bool)
+
+try:
+    with open(cfg_path, encoding="utf-8") as f:
+        cfg = json.load(f)
+    if not isinstance(cfg, dict):
+        errors.append("config.json must contain a JSON object")
+    else:
+        th = cfg.get("thresholds", {})
+        if not isinstance(th, dict):
+            errors.append("config.json: 'thresholds' must be an object")
+        else:
+            for k in ("warning", "failure"):
+                if k in th and not num(th[k]):
+                    errors.append(f"config.json: thresholds.{k} must be a number")
+        ts = cfg.get("total_sessions", 1)
+        if not isinstance(ts, int) or isinstance(ts, bool) or ts < 1:
+            errors.append("config.json: total_sessions must be a whole number >= 1")
+except FileNotFoundError:
+    errors.append(f"missing {cfg_path}")
+except (json.JSONDecodeError, UnicodeDecodeError) as e:
+    errors.append(f"config.json is not valid JSON ({e})")
+except OSError as e:
+    errors.append(f"cannot read config.json ({e.strerror})")
+
+try:
+    with open(csv_path, encoding="utf-8", newline="") as f:
+        reader = csv.DictReader(f)
+        need = ["Email", "Names", "Attendance Count", "Absence Count"]
+        if reader.fieldnames is None or any(c not in reader.fieldnames for c in need):
+            errors.append("assets.csv header must contain: " + ", ".join(need))
+        else:
+            rows = list(reader)
+            if not rows:
+                errors.append("assets.csv has no students")
+            for i, r in enumerate(rows, start=2):
+                for c in ("Attendance Count", "Absence Count"):
+                    v = (r.get(c) or "0").strip()
+                    if not v.isdigit():
+                        errors.append(f"assets.csv line {i}: '{c}' must be a whole number, got '{v}'")
+except FileNotFoundError:
+    errors.append(f"missing {csv_path}")
+except (csv.Error, UnicodeDecodeError) as e:
+    errors.append(f"assets.csv is not valid CSV ({e})")
+except OSError as e:
+    errors.append(f"cannot read assets.csv ({e.strerror})")
+
+for p in (csv_path, os.path.join(target, "reports")):
+    if os.path.exists(p) and not os.access(p, os.W_OK):
+        errors.append(f"{p} is not writable")
+os.makedirs(os.path.join(target, "reports"), exist_ok=True) if not errors else None
+
+if errors:
+    for e in errors[:10]:
+        print("Error: " + e, file=sys.stderr)
+    sys.exit(1)
+PY
 }
 
 # ---------------------------------------------------------------------------

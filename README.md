@@ -86,6 +86,21 @@ The app is interactive — it hands the terminal to the instructor to mark
 each student present/absent, updates `Helpers/assets.csv`, and writes
 `reports/attendance.log` / `reports/absent.log`.
 
+### Crash protection
+
+Before starting the app, Feature 2 checks that:
+
+- stdin is a real terminal (the app is interactive);
+- `Helpers/config.json` is valid JSON with numeric thresholds and
+  `total_sessions` >= 1;
+- `Helpers/assets.csv` has the `Email,Names,Attendance Count,Absence Count`
+  header, at least one student, and whole-number counts;
+- the roster and `reports/` are writable.
+
+If any check fails, it prints what is wrong and exits with status 1 instead
+of letting Python print a traceback. A non-zero exit from the app is also
+reported, and Ctrl+C during a session prints a short message.
+
 ## Feature 3: Archive the logs
 
 After a run, this feature copies whatever logs exist into timestamped,
